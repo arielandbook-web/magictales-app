@@ -27,7 +27,8 @@ except KeyError:
     st.sidebar.error("⚠️ 未設定 Gemini API Key (請檢查 Streamlit Secrets)")
 
 # 定義最穩定的模型名稱和 API 版本
-BASE_API_URL = "https://generativelanguage.googleapis.com/v1/models/"
+# 🚨 修正：切換回 v1beta 才能使用 responseMimeType (JSON 結構化輸出)
+BASE_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
 MODEL_TEXT = "gemini-2.5-flash"
 
 # --- 3. Firebase 初始化 (靜默模式) ---
@@ -39,7 +40,6 @@ try:
     from firebase_admin import initialize_app, credentials, firestore, get_app
     
     # 檢查 Firebase App 是否已經初始化
-    # 如果已經初始化，get_app() 不會報錯；如果未初始化，則嘗試初始化。
     try:
         get_app()
     except ValueError:
@@ -128,6 +128,7 @@ def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
+        # responseMimeType 只能在 v1beta API 中使用
         "generationConfig": {"responseMimeType": "application/json"}
     }
 
@@ -144,6 +145,7 @@ def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
         result = response.json()
         
         # 提取模型生成的文字內容 (JSON 字符串)
+        # 由於我們使用了 responseMimeType，text 應該就是 JSON 字串
         text_content = result['candidates'][0]['content']['parts'][0]['text']
         
         # 將模型返回的 JSON 字符串解析為 Python 字典
