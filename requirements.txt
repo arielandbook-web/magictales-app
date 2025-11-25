@@ -2,3 +2,4 @@ streamlit
 requests
 firebase-admin
 gTTS
+google-cloud-firestore
