@@ -1,0 +1,68 @@
+/* 設置頁面基礎樣式：使用 Inter 字體並移除預設的 Streamlit 樣式 */
+html, body, [data-testid="stAppViewContainer"] {
+    font-family: 'Inter', sans-serif;
+    background-color: #f7f9fc; /* 淺灰色背景 */
+}
+
+/* 頂部導航/標題區塊 */
+.stApp header {
+    background-color: #e0b0ff; /* 淺紫色頂部 */
+    padding: 10px 0;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* 讓主內容區塊看起來像一個卡片，適用於主要內容區塊 */
+[data-testid="stVerticalBlock"] > div:first-child > [data-testid="stHorizontalBlock"] {
+    padding: 15px;
+    border-radius: 15px;
+    background-color: white;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.05);
+    margin-bottom: 15px;
+}
+
+/* 副標題樣式 */
+h3 {
+    color: #8a2be2; /* 藍紫色 */
+    border-bottom: 2px solid #8a2be2;
+    padding-bottom: 5px;
+    margin-top: 20px;
+    font-weight: 700;
+}
+
+/* 按鈕美化：使用漸層色 */
+.stButton>button {
+    background-image: linear-gradient(to right, #6a5acd, #a020f0); /* 藍紫到紫羅蘭漸層 */
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 20px;
+    transition: all 0.3s;
+}
+
+.stButton>button:hover {
+    box-shadow: 0 4px 10px rgba(160, 32, 240, 0.4);
+    transform: translateY(-2px);
+}
+
+/* 訊息框 (st.info, st.success, st.warning) 圓角化 */
+[data-testid="stAlert"] {
+    border-radius: 12px;
+}
+
+/* 側邊欄調整 */
+[data-testid="stSidebar"] {
+    background-color: #e6e6fa; /* 薰衣草色側邊欄 */
+}
+
+/* CEFR 等級提示 (反白效果) */
+.cefr-hint {
+    background-color: #fffacd; /* 檸檬黃色反白 */
+    color: #555;
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 0.9em;
+    margin-top: 5px;
+    border-left: 5px solid #ffd700;
+}
+
