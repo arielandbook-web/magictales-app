@@ -1,36 +1,15 @@
 import streamlit as st
 import time
 import json
-import base64
+import requests
+import random
 from datetime import datetime
-from firebase_admin import initialize_app, credentials, firestore
+import io
 
-# --- 載入 Firebase 相關套件 ---
-try:
-    firebase_config_json = json.loads(st.secrets["__firebase_config"])
-    cred = credentials.Certificate(firebase_config_json)
-    initialize_app(cred)
-    db = firestore.client()
+# 引入 gTTS 用於穩定的語音合成
+from gtts import gTTS
 
-    USER_ID = "stream_user_123"
-except Exception as e:
-    st.sidebar.warning(f"🚨 Firebase 初始化失敗 ({e.__class__.__name__}). 使用模擬模式。")
-    db = None
-    USER_ID = "local_user_456"
-
-APP_ID = st.secrets["__app_id"] if "__app_id" in st.secrets else "default-app-id"
-
-# --- 載入自訂 CSS 樣式 ---
-def load_css(file_name):
-    try:
-        with open(file_name) as f:
-            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-    except FileNotFoundError:
-        st.warning("⚠️ 找不到 style.css 檔案。")
-
-load_css("style.css")
-
-# --- App 基礎設定與常數 ---
+# --- 1. App 基礎設定 ---
 st.set_page_config(
     page_title="MagicTales",
     page_icon="🦄",
@@ -38,184 +17,299 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-WORD_COUNT_MAP = {
-    "3 分鐘 (300 字)": 300,
-    "5 分鐘 (500 字)": 500,
-    "8 分鐘 (800 字)": 800,
-    "12 分鐘 (1200 字)": 1200,
-}
+# --- 2. 載入 Secrets (API Key & Firebase) ---
+try:
+    API_KEY = st.secrets["gemini_api_key"]
+except:
+    API_KEY = ""
+    # 在側邊欄顯示警告，但不影響主畫面
+    # st.sidebar.error("⚠️ 未設定 Gemini API Key")
 
+# 定義最穩定的模型名稱
+BASE_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/"
+MODEL_TEXT = "gemini-1.5-flash"
+
+# --- 3. Firebase 初始化 (靜默模式) ---
+# 我們使用廣泛的 try-except 確保 Firebase 錯誤不會讓 App 崩潰或顯示紅色警告
+db = None
+USER_ID = "guest_user"
+
+try:
+    from firebase_admin import initialize_app, credentials, firestore
+    from google.cloud import firestore as gcf
+    
+    if not gcf.Client()._app:
+        # 嘗試讀取 Firebase 設定
+        if "__firebase_config" in st.secrets:
+            firebase_config = json.loads(st.secrets["__firebase_config"])
+            cred = credentials.Certificate(firebase_config)
+            initialize_app(cred)
+            db = firestore.client()
+            USER_ID = "stream_user_123"
+except Exception:
+    # 如果失敗，靜默切換到模擬模式，不顯示錯誤
+    db = None
+
+APP_ID = st.secrets.get("__app_id", "default-app-id")
+
+# --- 4. 載入 CSS (樣式優化) ---
+# 為了避免找不到檔案報錯，我們直接把 CSS 寫在程式碼裡
+st.markdown("""
+<style>
+    html, body, [data-testid="stAppViewContainer"] {
+        font-family: 'Inter', sans-serif;
+        background-color: #f7f9fc;
+    }
+    .stApp header {
+        background-color: #e0b0ff;
+    }
+    .stButton>button {
+        background-image: linear-gradient(to right, #6a5acd, #a020f0);
+        color: white;
+        border-radius: 8px;
+        border: none;
+    }
+    .cefr-hint {
+        background-color: #fffacd;
+        padding: 10px;
+        border-radius: 5px;
+        border-left: 5px solid #ffd700;
+        margin-bottom: 10px;
+        font-size: 0.9rem;
+        color: #333;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# --- 5. 初始化 Session State ---
+if 'library' not in st.session_state: st.session_state.library = []
+if 'is_premium' not in st.session_state: st.session_state.is_premium = False
+if 'current_story' not in st.session_state: st.session_state.current_story = None
+
+# 定義常數
 CEFR_HINTS = {
-    "A0 (入門)": "基礎詞彙，約 150 字內，適合剛接觸英文的學齡前兒童。",
-    "A1 (初級)": "認識簡單日常用語，約 250 字內，適用於小學低年級。",
-    "A1+ (初級進階)": "能理解常見短句，約 350 字內，適用於小學中年級。",
-    "A2 (基礎)": "能描述簡單背景，約 500 字內，適用於小學高年級。",
-    "A2+ (基礎進階)": "能處理簡單交流，約 700 字內，適用於國中預備。",
-    "B1 (中級)": "能應對旅行、工作等主題，約 1000 字內。",
-    "B2 (中高級)": "能理解複雜文章主要觀點，約 1500 字內。",
+    "A0": "入門：150字內。極簡短句，適合剛接觸英文的幼兒。",
+    "A1": "初級：250字內。簡單日常用語，適合小學低年級。",
+    "A1+": "初級進階：350字內。能理解常見句子，適合小學中年級。",
+    "A2": "基礎：500字內。能描述簡單背景，適合小學高年級。",
+    "A2+": "基礎進階：700字內。能處理簡單交流，國中預備。",
+    "B1": "中級：1000字內。能應對旅行、生活主題。",
+    "B2": "中高級：1500字內。複雜抽象概念。"
 }
 
-# --- Session State 初始化 ---
-if 'coins' not in st.session_state:
-    st.session_state.coins = 100
-if 'is_premium' not in st.session_state:
-    st.session_state.is_premium = False
-if 'library' not in st.session_state:
-    st.session_state.library = []
-if 'current_story_data' not in st.session_state:
-    st.session_state.current_story_data = None
-if 'story_generated' not in st.session_state:
-    st.session_state.story_generated = False
-if 'loading' not in st.session_state:
-    st.session_state.loading = False
+WORD_COUNTS = {
+    "3 分鐘": 300, "5 分鐘": 500, "8 分鐘": 800, "12 分鐘": 1200
+}
 
-# --- 生成故事的函數 ---
-def call_gemini_story(hero, theme, level, word_count, style, extras):
-    """模擬呼叫 Gemini API 生成故事和詞彙"""
-    # (您的故事生成邏輯)
-    pass  # 請替換為實際的生成邏輯
+# --- 6. 核心功能函數 ---
 
-def call_gemini_tts(story_text):
-    """模擬呼叫 Gemini TTS API 生成音頻"""
-    # (您的語音合成邏輯)
-    pass  # 請替換為實際的語音生成邏輯
+def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
+    """呼叫 Gemini 1.5 Flash 生成故事"""
+    if not API_KEY:
+        st.error("❌ 請先設定 API Key 才能生成故事！")
+        return None
 
-# --- 側邊欄 ---
-with st.sidebar:
-    st.title("🦄 設定與後台")
-    st.caption("開發者/數據追蹤區")
+    # 構建 Prompt
+    prompt = (
+        f"You are a children's English storyteller. Write a story strictly following these rules:\n"
+        f"1. Hero: {hero} (Pet: {extras['pet']}).\n"
+        f"2. Setting: {extras['city']}. Favorite Color: {extras['color']}.\n"
+        f"3. Theme: {theme}. Style: {style}.\n"
+        f"4. Level: {level}. Length: approx {word_count} words.\n"
+        f"5. Superpower: {extras['superpower']}.\n"
+        f"6. Output Format: Return a raw JSON object with exactly two keys: 'story' (string) and 'vocab' (list of 5 strings).\n"
+        f"Do not include markdown formatting like ```json."
+    )
+
+    url = f"{BASE_API_URL}{MODEL_TEXT}:generateContent?key={API_KEY}"
     
-    premium_switch = st.toggle("啟動 Premium 會員", value=st.session_state.is_premium)
-    st.session_state.is_premium = premium_switch
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
         
-    if st.session_state.is_premium:
-        st.success("目前狀態：VIP 會員 👑")
-    else:
-        st.info("目前狀態：免費會員")
+        if response.status_code != 200:
+            st.error(f"API Error: {response.text}")
+            return None
+            
+        result = response.json()
+        text_content = result['candidates'][0]['content']['parts'][0]['text']
         
-    st.divider()
-    st.metric("持有金幣", st.session_state.coins)
-    st.caption(f"App ID: {APP_ID} | User ID: {USER_ID}")
+        # 解析 JSON
+        return json.loads(text_content)
+        
+    except Exception as e:
+        st.error(f"生成失敗，請重試。錯誤原因: {e}")
+        return None
 
-# 主標題
-st.header("MagicTales 兒童英語故事屋 📖")
+def generate_audio_gtts(text):
+    """使用 gTTS 生成 MP3 (穩定版)"""
+    try:
+        # 使用 Google Translate TTS 引擎
+        tts = gTTS(text=text, lang='en', slow=False)
+        
+        # 寫入記憶體 (BytesIO)，不需要存成檔案
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        return fp
+    except Exception as e:
+        st.warning(f"語音生成暫時無法使用: {e}")
+        return None
 
-# 建立分頁 (Tabs)
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Home", "✨ Story Request", "📚 Library", "🔥 Hot Stories", "🛠️ Tool"])
+# --- 7. UI 介面 ---
 
-# ----------------------------------------------------
+st.title("MagicTales 兒童英語故事屋 📖")
+
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Home", "✨ Story Request", "📚 Library", "🔥 Hot", "🛠️ Tool"])
+
 # --- Tab 1: Home ---
-# ----------------------------------------------------
 with tab1:
-    st.subheader("我的學習進度")
-    
-    col1, col2, col3 = st.columns(3)
+    st.subheader("歡迎回來！")
+    col1, col2 = st.columns(2)
     with col1:
         st.metric("本週閱讀", "3 篇")
     with col2:
-        st.metric("連續登入", "5 天", "🔥")
-    with col3:
-        st.metric("總單字量", "520", "+12%")
-        
-    st.progress(0.6, text="距離下個獎勵還差 40%")
-    st.divider()
+        st.metric("閱讀進度", "Level A1")
     
-    # Premium 解鎖的英文
+    st.progress(0.4, text="距離升級還差 60%")
+    
+    st.markdown("### 🏆 經典故事")
+    c1, c2 = st.columns(2)
+    c1.button("Three Little Pigs", use_container_width=True)
+    c2.button("Little Red Riding Hood", use_container_width=True)
+
     if st.session_state.is_premium:
-        st.write("👑 **Premium 熱門故事**")
-        st.image("https://placehold.co/400x150/8a2be2/ffffff?text=VIP+Adventure", caption="只有VIP才能閱讀的獨家主題")
+        st.success("👑 Premium 會員已啟用：您可以閱讀熱門故事！")
+    else:
+        st.info("💡 升級 Premium 解鎖更多功能！")
 
-    # 經典故事
-    st.write("📚 **經典英文故事**")
-    col_c1, col_c2 = st.columns(2)
-    with col_c1:
-        st.button("Three Little Pigs", use_container_width=True)
-    with col_c2:
-        st.button("The Lion and Mouse", use_container_width=True)
-
-# ----------------------------------------------------
-# --- Tab 2: Story Request ---
-# ----------------------------------------------------
+# --- Tab 2: Story Request (核心) ---
 with tab2:
-    st.subheader("✨ 創建你的專屬故事！")
+    st.subheader("✨ 創建專屬故事")
     
-    level = st.selectbox("CEFR 英文程度分級", options=list(CEFR_HINTS.keys()))
-    st.markdown(f'<div class="cefr-hint">{CEFR_HINTS[level]}</div>', unsafe_allow_html=True)
+    # 分級選擇
+    level_key = st.selectbox("選擇 CEFR 等級", list(CEFR_HINTS.keys()))
+    st.markdown(f'<div class="cefr-hint">{CEFR_HINTS[level_key]}</div>', unsafe_allow_html=True)
     
-    with st.container(border=True): 
-        st.caption("主角設定與偏好")
-        hero_name = st.text_input("主角名字 (必填)", "Leo", key="hero_input")
-        pet_name = st.text_input("寵物名字 (可選)", "Rex")
-        city_name = st.text_input("居住城市", "London")
-    
-    if st.session_state.is_premium:
-        superpower = st.selectbox("⚡ 選擇超能力 (VIP 專屬)", ["無 (None)", "隱形斗篷 (Invisibility)", "會飛 (Flight)", "噴火 (Fire Breath)"])
-    else:
-        superpower = st.selectbox("⚡ 選擇超能力 (VIP 專屬)", ["無 (None)"], disabled=True)
-        st.caption("🔒 升級 VIP 才能解鎖超能力！")
-    
-    story_minutes = st.select_slider("故事長度 (閱讀時間)", options=list(WORD_COUNT_MAP.keys()))
-    word_count = WORD_COUNT_MAP[story_minutes]
+    # 客製化選項
+    with st.container(border=True):
+        st.caption("主角設定")
+        c1, c2 = st.columns(2)
+        hero = c1.text_input("主角名字 (英文)", "Leo")
+        pet = c2.text_input("寵物名字", "Rex")
+        
+        c3, c4 = st.columns(2)
+        color = c3.color_picker("喜歡的顏色", "#00f900")
+        city = c4.text_input("居住城市", "Taipei")
 
-    style = st.selectbox("故事風格", ["溫馨 (Warm)", "冒險 (Adventure)", "搞笑 (Funny)"])
+    # Premium 選項
+    st.markdown("---")
     if st.session_state.is_premium:
-        theme = st.selectbox("故事主題 (VIP 可選)", ["上學焦慮 (School Anxiety)", "勇氣 (Courage)", "分享 (Sharing)", "保持專注力 (Focus)"])
+        superpower = st.selectbox("⚡ 超能力 (VIP)", ["無", "隱形", "飛行", "噴火"])
+        theme = st.selectbox("主題 (VIP)", ["上學焦慮", "勇氣", "分享", "專注力"])
     else:
-        theme = st.selectbox("故事主題", ["上學第一天 (First Day)", "小動物 (Animals)", "新朋友 (New Friends)"])
+        superpower = st.selectbox("⚡ 超能力 (VIP)", ["無"], disabled=True)
+        theme = st.selectbox("主題", ["冒險", "日常生活", "友誼"])
+        st.caption("🔒 升級 Premium 解鎖超能力與特殊主題！")
 
-    if st.button("✨ 產生故事 & 語音檔", type="primary"):
-        if not hero_name:
-            st.error("❌ 請輸入主角名字！")
+    # 長度與風格
+    length_str = st.select_slider("故事長度", options=list(WORD_COUNTS.keys()))
+    style = st.radio("風格", ["溫馨", "冒險", "搞笑"], horizontal=True)
+
+    # 生成按鈕
+    if st.button("✨ 產生故事 & 語音檔", type="primary", use_container_width=True):
+        if not hero:
+            st.warning("請輸入主角名字！")
         else:
-            extras = {
-                "city": city_name, 
-                "pet": pet_name, 
-                "superpower": superpower
-            }
-            gemini_result = call_gemini_story(hero_name, theme, level, word_count, style, extras)
-            if gemini_result:
-                st.session_state.current_story_data = {
-                    "title": f"🚀 {hero_name} 的 {theme} 冒險",
-                    "text": gemini_result['story'],
-                    "vocab": gemini_result['vocab'],
-                }
-                st.success("✅ 故事和語音檔已生成！")
+            with st.spinner("AI 正在編寫故事並錄製語音..."):
+                # 1. 生成文字
+                extras = {"pet": pet, "city": city, "color": color, "superpower": superpower}
+                result = generate_story_with_gemini(hero, theme, level_key, WORD_COUNTS[length_str], style, extras)
+                
+                if result:
+                    # 2. 生成語音
+                    audio_fp = generate_audio_gtts(result['story'])
+                    
+                    # 3. 存入暫存
+                    st.session_state.current_story = {
+                        "title": f"{hero}'s {theme} Adventure",
+                        "text": result['story'],
+                        "vocab": result['vocab'],
+                        "audio": audio_fp,
+                        "level": level_key
+                    }
+                    st.success("生成成功！")
 
-    if st.session_state.current_story_data:
-        data = st.session_state.current_story_data
-        st.success("故事生成完成！")
+    # 顯示生成結果
+    if st.session_state.current_story:
+        data = st.session_state.current_story
+        
+        st.markdown("---")
         st.markdown(f"### {data['title']}")
-        st.markdown(data['text'])
-        st.write(f"**🔑 精選高頻詞：** {', '.join(data['vocab'])}")
+        
+        # 播放器
+        if data['audio']:
+            st.audio(data['audio'], format='audio/mp3')
+        
+        st.write(data['text'])
+        
+        st.info(f"🔑 關鍵單字: {', '.join(data['vocab'])}")
+        
+        # 自動存入圖書館按鈕
+        if st.button("💾 存入圖書館", key="save_btn"):
+            entry = f"{data['title']} ({data['level']})"
+            if entry not in st.session_state.library:
+                st.session_state.library.append(entry)
+                st.toast("已存入圖書館！")
 
-# ----------------------------------------------------
 # --- Tab 3: Library ---
-# ----------------------------------------------------
 with tab3:
     st.subheader("📚 我的書櫃")
-    search_term = st.text_input("🔎 搜尋故事標題...", "")
-    
-    filtered_library = [
-        book for book in st.session_state.library 
-        if search_term.lower() in book.lower()
-    ]
+    search = st.text_input("搜尋故事...", "")
     
     if not st.session_state.library:
-        st.write("書櫃還是空的，快去產生故事吧！")
+        st.write("書櫃是空的。")
     else:
-        for book in filtered_library:
-            st.info(f"📖 {book}")
+        for book in st.session_state.library:
+            if search.lower() in book.lower():
+                st.info(f"📖 {book}")
 
-# ----------------------------------------------------
 # --- Tab 4: Hot Stories ---
-# ----------------------------------------------------
 with tab4:
-    st.subheader("🔥 本週熱門主題")
-    st.write("這裡列出熱門主題...")
+    st.subheader("🔥 熱門主題 (Premium)")
+    cols = st.columns(3)
+    titles = ["ADHD 專注力", "十萬個為什麼", "經典改編"]
+    
+    for i, title in enumerate(titles):
+        with cols[i]:
+            st.image(f"[https://placehold.co/150x100?text=](https://placehold.co/150x100?text=){i+1}", use_container_width=True)
+            if st.session_state.is_premium:
+                st.button(title, key=f"hot_{i}")
+            else:
+                st.button("鎖定 🔒", disabled=True, key=f"hot_lock_{i}")
 
-# ----------------------------------------------------
 # --- Tab 5: Tool ---
-# ----------------------------------------------------
 with tab5:
-    st.subheader("🛠️ 數據與工具")
-    st.write("這裡可以進行數據記錄...")
+    st.subheader("⚙️ 設定與數據")
+    
+    # Premium 開關
+    check_premium = st.toggle("啟用 Premium 會員 (模擬)", value=st.session_state.is_premium)
+    if check_premium != st.session_state.is_premium:
+        st.session_state.is_premium = check_premium
+        st.rerun()
+
+    st.write("---")
+    st.write("📊 **聽音頻時間記錄**")
+    if db:
+        st.success("雲端資料庫連線中...")
+    else:
+        st.warning("目前使用本地模擬模式 (資料不會上傳雲端)")
+
+    st.slider("今日聽力目標 (分鐘)", 0, 60, 30)
+
+
