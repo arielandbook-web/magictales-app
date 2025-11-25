@@ -15,44 +15,49 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 2. 載入 Secrets (API Key & Firebase) ---
-# 🚨 警告：這是一個臨時測試步驟，成功後必須還原！
-API_KEY = "AIzaSyA-HXh3jtRevDRwZ5P1MWGMdUKllxQpnYo"
+# --- 2. 載入 Secrets (API Key, APP_ID, Firebase Config) ---
+# 將所有 Secrets 讀取放在一起，確保 Streamlit 順利處理
+APP_ID = st.secrets.get("__app_id", "default-app-id")
 
-# 註釋掉原始的 Secrets 讀取邏輯
-# try:
-#     API_KEY = st.secrets["gemini_api_key"]
-# except KeyError:
-#     API_KEY = ""
-# ...
+try:
+    API_KEY = st.secrets["gemini_api_key"]
+except KeyError:
+    # 如果找不到 API Key，將其設為空字串，讓 UI 顯示警告
+    API_KEY = ""
+    st.sidebar.error("⚠️ 未設定 Gemini API Key (請檢查 Streamlit Secrets)")
 
 # 定義最穩定的模型名稱和 API 版本
-# 使用 v1 和 gemini-2.5-flash 確保普遍連線成功
 BASE_API_URL = "https://generativelanguage.googleapis.com/v1/models/"
 MODEL_TEXT = "gemini-2.5-flash"
 
 # --- 3. Firebase 初始化 (靜默模式) ---
 db = None
 USER_ID = "guest_user"
-# 確保所有 Firebase 相關的 import 都在 try 區塊內，以避免 ModuleNotFoundError
-try:
-    from firebase_admin import initialize_app, credentials, firestore
-    from google.cloud import firestore as gcf
-    
-    # 使用一個簡單的檢查確保 App 只初始化一次
-    if not gcf.Client()._app:
-        if "__firebase_config" in st.secrets:
-            # 這是 Streamlit 雲端環境
-            firebase_config = json.loads(st.secrets["__firebase_config"])
-            cred = credentials.Certificate(firebase_config)
-            initialize_app(cred)
-            db = firestore.client()
-            USER_ID = "stream_user_123"
-except Exception:
-    # 本地運行或缺少配置時，db 保持為 None
-    db = None
 
-APP_ID = st.secrets.get("__app_id", "default-app-id")
+# 確保所有 Firebase 相關的 import 都在 try 區塊內
+try:
+    from firebase_admin import initialize_app, credentials, firestore, get_app
+    
+    # 檢查 Firebase App 是否已經初始化
+    # 如果已經初始化，get_app() 不會報錯；如果未初始化，則嘗試初始化。
+    try:
+        get_app()
+    except ValueError:
+        # 只有在 Streamlit Cloud 環境中才嘗試初始化
+        if "__firebase_config" in st.secrets:
+            firebase_config = json.loads(st.secrets["__firebase_config"])
+            # 使用模擬的憑證
+            cred = credentials.Certificate(firebase_config) 
+            initialize_app(cred)
+    
+    # 初始化 Firestore 客戶端
+    db = firestore.client()
+    USER_ID = "stream_user_123"
+    
+except Exception as e:
+    # 本地運行或缺少配置時，db 保持為 None
+    # st.sidebar.warning(f"Firebase Init Error: {e}") # 不顯示給用戶
+    db = None
 
 # --- 4. CSS 樣式 ---
 st.markdown("""
@@ -69,6 +74,10 @@ st.markdown("""
         color: white;
         border-radius: 8px;
         border: none;
+        transition: transform 0.1s;
+    }
+    .stButton>button:active {
+        transform: scale(0.98);
     }
     .cefr-hint {
         background-color: #fffacd;
@@ -103,7 +112,6 @@ WORD_COUNTS = {"3 分鐘": 300, "5 分鐘": 500, "8 分鐘": 800, "12 分鐘": 1
 def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
     # 確保 API Key 存在
     if not API_KEY:
-        st.error("❌ 請先設定 API Key 才能生成故事！")
         return None
 
     prompt = (
@@ -129,7 +137,7 @@ def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
         
         # 檢查 API 狀態碼
         if response.status_code != 200:
-            st.error(f"API Error: {response.text}")
+            st.error(f"API Error: {response.status_code} - {response.text}")
             return None
         
         # 解析 JSON 結果
@@ -143,7 +151,7 @@ def generate_story_with_gemini(hero, theme, level, word_count, style, extras):
         
     except Exception as e:
         # 捕捉所有可能的錯誤，例如 JSON 解析錯誤或連線超時
-        st.error(f"Error: {e}")
+        st.error(f"連線或解析錯誤: {e}")
         return None
 
 def generate_audio_gtts(text):
@@ -166,7 +174,7 @@ st.title("MagicTales 兒童英語故事屋 📖")
 
 # 檢查 API Key，如果沒有就顯示警告在主畫面頂部
 if not API_KEY:
-    st.error("❌ 請設定 API Key 才能生成故事！")
+    st.error("❌ 請設定 API Key 才能生成故事！ (請檢查 Streamlit Secrets 設定)")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏠 Home", "✨ Story Request", "📚 Library", "🔥 Hot", "🛠️ Tool"])
 
@@ -180,7 +188,6 @@ with tab1:
     
     st.markdown("### 🏆 經典故事")
     c1, c2 = st.columns(2)
-    # **【已修復】移除舊的、會導致崩潰的 st.image 程式碼**
     c1.button("🐷 Three Little Pigs", use_container_width=True)
     c2.button("🐺 Little Red Riding Hood", use_container_width=True)
 
@@ -274,7 +281,6 @@ with tab4:
     titles = ["🧠 ADHD 專注力", "🌍 十萬個為什麼", "🏰 經典改編"]
     for i, title in enumerate(titles):
         with cols[i]:
-            # **【已修復】移除舊的、會導致崩潰的 st.image 程式碼**
             st.markdown(f"### {title}")
             if st.session_state.is_premium:
                 st.button("閱讀", key=f"hot_{i}")
