@@ -16,12 +16,15 @@ st.set_page_config(
 )
 
 # --- 2. 載入 Secrets (API Key & Firebase) ---
-try:
-    API_KEY = st.secrets["gemini_api_key"]
-except:
-    API_KEY = ""
-    # 在側邊欄顯示警告，但不影響主畫面
-    # st.sidebar.error("⚠️ 未設定 Gemini API Key")
+# 🚨 警告：這是一個臨時測試步驟，成功後必須還原！
+API_KEY = "AIzaSyA-HXh3jtRevDRwZ5P1MWGMdUKllxQpnYo"
+
+# 註釋掉原始的 Secrets 讀取邏輯
+# try:
+#     API_KEY = st.secrets["gemini_api_key"]
+# except KeyError:
+#     API_KEY = ""
+# ...
 
 # 定義最穩定的模型名稱和 API 版本
 # 使用 v1 和 gemini-2.5-flash 確保普遍連線成功
